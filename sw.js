@@ -1,6 +1,6 @@
 /* キャッシュ名を変えるとアプリ更新として扱われる（ファイルを更新したら番号を上げる） */
-const CACHE = "infra-note-v2.1.0";
-const FILES = ["./", "./index.html", "./style.css", "./data.js", "./diagrams.js", "./cases.js", "./app.js", "./manifest.json", "./icon-192.png", "./icon-512.png"];
+const CACHE = "infra-note-v2.0.0";
+const FILES = ["./", "./index.html", "./style.css", "./data.js", "./diagrams.js", "./app.js", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))));
 self.addEventListener("activate", e => e.waitUntil(
