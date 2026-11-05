@@ -4,7 +4,7 @@
  * state には自作用語・初期用語の編集内容・学習進捗・設定だけが入るため、
  * アプリ更新で初期用語が増えても学習記録はそのまま引き継がれる。
  */
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.1.0";
 const KEY = "infraNote_v2", OLD_KEY = "infraNote_v1", DAY = 86400000;
 const CAT = Object.fromEntries(CATEGORIES.map(c => [c.id, c.name]));
 const V1CAT = { "ネットワーク": "net", "サーバー": "server", "セキュリティ": "sec", "基本用語": "basic", "その他": "other" };
@@ -40,6 +40,7 @@ const ICONS = {
   plug: '<path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4"/>',
   grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   shuffle: '<path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>',
+  brief: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18"/>',
   cards: '<rect x="3" y="6" width="14" height="14" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12"/>',
   star: '<path d="M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z"/>',
   chev: '<path d="M9 6l6 6-6 6"/>'
@@ -49,7 +50,7 @@ const icon = (n, size = 22) => `<svg viewBox="0 0 24 24" width="${size}" height=
 /* ───────── 保存データ ───────── */
 function defaultState() {
   return {
-    version: 2, userTerms: [], overrides: {}, hidden: [], progress: {}, favorites: [], missed: [],
+    version: 2, userTerms: [], overrides: {}, hidden: [], progress: {}, favorites: [], missed: [], cases: [],
     stats: { answered: 0, correct: 0, daily: {}, drills: { port: { a: 0, c: 0 }, subnet: { a: 0, c: 0 } } },
     studyDays: [],
     settings: { theme: "auto", quizSize: 10, newPerDay: 10, types: { def: true, term: true, tf: true, input: true } },
@@ -63,7 +64,7 @@ function normalizeState(s) {
   out.stats.drills = { ...d.stats.drills, ...((s.stats || {}).drills || {}) };
   out.settings = { ...d.settings, ...(s.settings || {}) };
   out.settings.types = { ...d.settings.types, ...((s.settings || {}).types || {}) };
-  for (const k of ["userTerms", "hidden", "favorites", "missed", "studyDays"]) if (!Array.isArray(out[k])) out[k] = [];
+  for (const k of ["userTerms", "hidden", "favorites", "missed", "studyDays", "cases"]) if (!Array.isArray(out[k])) out[k] = [];
   for (const k of ["overrides", "progress"]) if (!out[k] || typeof out[k] !== "object") out[k] = {};
   out.version = 2;
   return out;
@@ -298,14 +299,14 @@ const ui = {
   tab: "home", detail: null, edit: null,
   termFilter: "all", termSort: "cat", search: "",
   pickCats: new Set(), pickTags: new Set(), pickFav: false, pickOpen: false,
-  session: null
+  session: null, caseView: null, caseEdit: null
 };
 
 function startSession(opts) {
   const { title, kind = "quiz", sources } = opts;
   if (!sources.length) { toast("出題できる用語がありません"); return; }
   ui.session = { title, kind, items: sources.map(s => ({ src: s })), i: 0, correct: 0, done: false, answered: false, revealed: false, retry: opts.retry };
-  ui.tab = "study"; ui.detail = null; ui.edit = null;
+  ui.tab = "study"; ui.detail = null; ui.edit = null; ui.caseView = null; ui.caseEdit = null;
   render(); window.scrollTo(0, 0);
 }
 function termSources(terms, n = state.settings.quizSize) {
@@ -387,18 +388,21 @@ function render() {
   const app = $("#app");
   if (ui.edit) app.innerHTML = editView();
   else if (ui.detail) app.innerHTML = detailView();
-  else app.innerHTML = ({ home: homeView, terms: termsView, study: studyView, stats: statsView, settings: settingsView }[ui.tab])();
+  else if (ui.caseEdit) app.innerHTML = caseEditView();
+  else if (ui.caseView) app.innerHTML = caseView();
+  else app.innerHTML = ({ home: homeView, terms: termsView, study: studyView, cases: casesView, stats: statsView, settings: settingsView }[ui.tab])();
   const inp = $("#answerInput"); if (inp && !ui.session.answered) inp.focus({ preventScroll: true });
 }
 function renderHeader() {
   const h = $("#head");
-  if (ui.edit || ui.detail) {
-    h.innerHTML = `<button class="back" data-act="back" aria-label="戻る">‹ 戻る</button><div class="small muted">${ui.edit ? (ui.edit === "new" ? "用語を追加" : "用語を編集") : "用語の詳細"}</div><span style="width:60px"></span>`;
+  if (ui.edit || ui.detail || ui.caseEdit || ui.caseView) {
+    const title = ui.edit ? (ui.edit === "new" ? "用語を追加" : "用語を編集") : ui.detail ? "用語の詳細" : ui.caseEdit ? (ui.caseEdit === "new" ? "新しい案件" : "案件を編集") : "案件の解説";
+    h.innerHTML = `<button class="back" data-act="back" aria-label="戻る">‹ 戻る</button><div class="small muted">${title}</div><span style="width:60px"></span>`;
   } else if (ui.tab === "study" && ui.session && !ui.session.done) {
     h.innerHTML = `<button class="back" data-act="quit" aria-label="中断">✕ 中断</button><div class="small muted">${esc(ui.session.title)}</div><span style="width:60px"></span>`;
   } else {
     const st = streakInfo();
-    h.innerHTML = `<div class="brand">インフラ<span>ノート</span></div><span class="streak" title="連続学習日数">🔥 ${st.cur}日</span>`;
+    h.innerHTML = `<div class="brand">インフラ<span>ノート</span></div><div class="row"><span class="streak" title="連続学習日数">🔥 ${st.cur}日</span><button class="iconbtn ${ui.tab === "settings" ? "on" : ""}" data-act="tab" data-tab="settings" aria-label="設定">${icon("gear", 20)}</button></div>`;
   }
 }
 function levelBar(terms) {
@@ -679,7 +683,7 @@ function settingsView() {
     <button class="btn danger full" data-act="reset-progress">学習の記録だけリセット</button>
     <button class="btn danger full" data-act="reset-all">すべて初期状態に戻す</button></div>
   </div>
-  <p class="small muted" style="text-align:center">インフラノート v${APP_VERSION} ・ 初期用語 ${TERMS.length}語 ・ 自作 ${state.userTerms.length}語</p>`;
+  <p class="small muted" style="text-align:center">インフラノート v${APP_VERSION} ・ 初期用語 ${TERMS.length}語 ・ 自作 ${state.userTerms.length}語 ・ 案件 ${state.cases.length}件</p>`;
 }
 
 /* ───────── テーマ ───────── */
@@ -703,10 +707,16 @@ function toast(msg, action) {
 }
 
 /* ───────── 操作 ───────── */
-function goTab(t) { ui.tab = t; ui.detail = null; ui.edit = null; render(); window.scrollTo(0, 0); }
+function goTab(t) { ui.tab = t; ui.detail = null; ui.edit = null; ui.caseView = null; ui.caseEdit = null; render(); window.scrollTo(0, 0); }
 const actions = {
   tab: el => goTab(el.dataset.tab),
-  back: () => { if (ui.edit) { const id = ui.edit; ui.edit = null; if (id !== "new" && getTerm(id)) ui.detail = id; } else ui.detail = null; render(); },
+  back: () => {
+    if (ui.edit) { const id = ui.edit; ui.edit = null; if (id !== "new" && getTerm(id)) ui.detail = id; }
+    else if (ui.detail) ui.detail = null;
+    else if (ui.caseEdit) ui.caseEdit = null;
+    else ui.caseView = null;
+    render();
+  },
   open: el => { ui.detail = el.dataset.id; ui.edit = null; render(); window.scrollTo(0, 0); },
   today: () => startToday(),
   random: () => startSession({ title: "全範囲ランダム", sources: termSources(allTerms()) }),
@@ -794,11 +804,12 @@ const actions = {
     save(); render(); toast("学習の記録をリセットしました");
   },
   "reset-all": () => {
-    if (!confirm("自作の用語・編集内容・進捗・設定をすべて初期状態に戻しますか？この操作は取り消せません。")) return;
+    if (!confirm("自作の用語・案件・編集内容・進捗・設定をすべて初期状態に戻しますか？この操作は取り消せません。")) return;
     state = defaultState(); save(); ui.session = null; goTab("home"); toast("初期状態に戻しました");
   }
 };
 
+Object.assign(actions, CASE_ACTIONS);
 document.addEventListener("click", e => {
   const el = e.target.closest("[data-act]");
   if (!el || el.tagName === "INPUT") return;
@@ -826,6 +837,7 @@ document.addEventListener("submit", e => {
   e.preventDefault();
   if (e.target.id === "answerForm") submitAnswer($("#answerInput").value.trim());
   if (e.target.id === "termForm") saveTermForm(new FormData(e.target));
+  if (e.target.id === "caseForm") saveCaseForm(new FormData(e.target));
 });
 function saveTermForm(f) {
   const t = {
