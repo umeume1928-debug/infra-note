@@ -4,7 +4,7 @@
  * state には自作用語・初期用語の編集内容・学習進捗・設定だけが入るため、
  * アプリ更新で初期用語が増えても学習記録はそのまま引き継がれる。
  */
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.1.0";
 const KEY = "infraNote_v2", OLD_KEY = "infraNote_v1", DAY = 86400000;
 const CAT = Object.fromEntries(CATEGORIES.map(c => [c.id, c.name]));
 const V1CAT = { "ネットワーク": "net", "サーバー": "server", "セキュリティ": "sec", "基本用語": "basic", "その他": "other" };
@@ -45,6 +45,23 @@ const ICONS = {
   chev: '<path d="M9 6l6 6-6 6"/>'
 };
 const icon = (n, size = 22) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n]}</svg>`;
+
+/* たとえの絵：「絵文字 ラベル > 絵文字 ラベル | …」をカードの列にする */
+function illHTML(ill, small) {
+  if (!ill) return "";
+  const parts = ill.split(/\s+([>|＋])\s+/);
+  let out = "";
+  parts.forEach((p, i) => {
+    if (i % 2 === 1) { out += `<span class="ar">${p === ">" ? "→" : p === "|" ? "" : esc(p)}</span>`; return; }
+    const m = p.match(/^((?:\p{Extended_Pictographic}|\p{Emoji_Component}|\u200d|\ufe0f)+)\s*(.*)$/u);
+    out += `<span class="it">${m ? `<span class="em">${m[1]}</span><span class="tx">${esc(m[2])}</span>` : `<span class="tx">${esc(p)}</span>`}</span>`;
+  });
+  return `<div class="ill ${small ? "sm" : ""}" aria-hidden="true">${out}</div>`;
+}
+function easyHTML(t, small) {
+  if (!t.easy && !t.ill) return "";
+  return `<div class="easy"><div class="lbl">💬 かんたんに言うと</div>${t.easy ? `<p>${esc(t.easy)}</p>` : ""}${illHTML(t.ill, small)}</div>`;
+}
 
 /* ───────── 保存データ ───────── */
 function defaultState() {
@@ -123,8 +140,9 @@ function save() {
 function allTerms() {
   const hidden = new Set(state.hidden);
   const builtins = TERMS.filter(t => !hidden.has(t.id)).map(t => {
-    const o = state.overrides[t.id];
-    return { ...t, ...(o || {}), builtin: true, edited: !!o };
+    const o = state.overrides[t.id], ez = (typeof EASY !== "undefined" && EASY[t.id]) || {};
+    const dias = [...new Set([ez.d, t.diagram].filter(d => d && DIAGRAMS[d]))];
+    return { ...t, easy: ez.e || "", ill: ez.i || "", dias, ...(o || {}), builtin: true, edited: !!o };
   });
   const users = state.userTerms.map(t => ({ ...t, builtin: false }));
   return [...users, ...builtins];
@@ -146,8 +164,8 @@ function answerKeys(t) {
   (t.alias || []).forEach(a => a && keys.add(a));
   return [...keys];
 }
-function maskDef(t) {
-  let d = t.def;
+function maskDef(t, text = t.def) {
+  let d = text;
   answerKeys(t).filter(k => k.length >= 2).sort((a, b) => b.length - a.length).forEach(k => {
     d = d.replace(new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "〇〇");
   });
@@ -234,6 +252,9 @@ function mcFrom(prompt, correct, wrongs, extra = {}) {
   return { kind: "mc", prompt, choices, answer: choices.indexOf(correct), ...extra };
 }
 function termQuestion(term, pool, forceType) {
+  // 問題文・選択肢は「かんたんに言うと」の文があればそちらを使う
+  const withDesc = x => ({ ...x, desc: x.easy || x.def });
+  term = withDesc(term); pool = pool.map(withDesc);
   const types = Object.keys(state.settings.types).filter(k => state.settings.types[k]);
   const enabled = types.length ? types : ["def"];
   const hand = (term.qs || []);
@@ -247,20 +268,20 @@ function termQuestion(term, pool, forceType) {
   const base = { termId: term.id, type };
   if (type === "term") {
     const w = distractors(term, pool, "term");
-    if (w.length >= 3) return { ...mcFrom("次の説明にあてはまる用語は？", term.term, w.map(x => x.term)), sub: maskDef(term), why: `正解は「${term.term}」。${term.mem || ""}`, ...base };
+    if (w.length >= 3) return { ...mcFrom("次の説明にあてはまる用語は？", term.term, w.map(x => x.term)), sub: maskDef(term, term.desc), why: `正解は「${term.term}」。${term.mem || ""}`, ...base };
   }
   if (type === "tf") {
     const truth = Math.random() < 0.5;
-    const other = distractors(term, pool, "def", 1)[0];
-    if (truth || !other) return { kind: "tf", prompt: "次の説明は正しい？", sub: `「${term.term}」とは、${term.def}`, answer: true, why: `正しい説明です。${term.mem || ""}`, ...base };
-    return { kind: "tf", prompt: "次の説明は正しい？", sub: `「${term.term}」とは、${other.def}`, answer: false, why: `これは「${other.term}」の説明。「${term.term}」は：${term.def}`, ...base };
+    const other = distractors(term, pool, "desc", 1)[0];
+    if (truth || !other) return { kind: "tf", prompt: "次の説明は正しい？", sub: `「${term.term}」とは… ${maskDef(term, term.desc)}`, answer: true, why: `正しい説明です。${term.mem || ""}`, ...base };
+    return { kind: "tf", prompt: "次の説明は正しい？", sub: `「${term.term}」とは… ${maskDef(other, other.desc)}`, answer: false, why: `これは「${other.term}」の説明です。`, ...base };
   }
   if (type === "input") {
-    return { kind: "input", prompt: "次の説明にあてはまる用語を入力しよう", sub: maskDef(term), accept: answerKeys(term), display: term.term, hint: `${CAT[term.cat] || "その他"} ・ ${[...answerKeys(term)[1] || term.term][0]}…`, why: term.mem || "", ...base };
+    return { kind: "input", prompt: "次の説明にあてはまる用語を入力しよう", sub: maskDef(term, term.desc), accept: answerKeys(term), display: term.term, hint: `${CAT[term.cat] || "その他"} ・ ${[...answerKeys(term)[1] || term.term][0]}…`, why: term.mem || "", ...base };
   }
-  const w = distractors(term, pool, "def");
-  if (w.length < 3) return { kind: "tf", prompt: "次の説明は正しい？", sub: `「${term.term}」とは、${term.def}`, answer: true, why: "", ...base };
-  return { ...mcFrom(`「${term.term}」の説明として正しいものは？`, term.def, w.map(x => x.def)), why: term.mem ? `覚え方：${term.mem}` : "", ...base };
+  const w = distractors(term, pool, "desc");
+  if (w.length < 3) return { kind: "tf", prompt: "次の説明は正しい？", sub: `「${term.term}」とは… ${term.desc}`, answer: true, why: "", ...base };
+  return { ...mcFrom(`「${term.term}」の説明として正しいものは？`, maskDef(term, term.desc), w.map(x => maskDef(x, x.desc))), why: term.mem ? `覚え方：${term.mem}` : "", ...base };
 }
 function portQuestion() {
   const p = pick(PORTS);
@@ -411,7 +432,7 @@ function termRow(t) {
   const lv = level(t.id), miss = state.missed.includes(t.id), fav = state.favorites.includes(t.id);
   return `<button class="termrow" data-act="open" data-id="${esc(t.id)}">
     <span class="dot" style="background:${LEVELS[lv].color}" title="${LEVELS[lv].name}"></span>
-    <span class="grow"><span class="name">${fav ? "★ " : ""}${esc(t.term)}</span><span class="def">${esc(t.def)}</span></span>
+    <span class="grow"><span class="name">${fav ? "★ " : ""}${esc(t.term)}</span><span class="def">${esc(t.easy || t.def)}</span></span>
     ${miss ? '<span class="tag ng">苦手</span>' : ""}${!t.builtin ? '<span class="tag">自作</span>' : ""}
     <span class="chev">${icon("chev", 18)}</span></button>`;
 }
@@ -444,7 +465,7 @@ function homeView() {
     <button class="btn ghost sm grow" data-act="flash-today">${icon("cards", 16)} カード</button>
   </div>
   ${daily ? `<div class="card"><div class="row between"><span class="pill">今日の一語</span><span class="tag">${esc(CAT[daily.cat] || "その他")}</span></div>
-    <div class="term">${esc(daily.term)}</div><p>${esc(daily.def)}</p>
+    <div class="term">${esc(daily.term)}</div>${daily.easy ? `<p>${esc(daily.easy)}</p>${illHTML(daily.ill, true)}` : `<p>${esc(daily.def)}</p>`}
     <button class="btn secondary sm mt" data-act="open" data-id="${esc(daily.id)}">くわしく見る</button></div>` : ""}
   <div class="card"><div class="row between"><h2>習得の進み具合</h2><span class="small muted">全${terms.length}語</span></div>${levelBar(terms)}</div>
   ${weak.length ? `<div class="sectiontitle"><h2>苦手な用語</h2><button class="btn ghost sm" data-act="weak">まとめて復習</button></div>
@@ -456,7 +477,7 @@ function filteredTerms() {
   const q = norm(ui.search);
   let list = allTerms().filter(t =>
     (ui.termFilter === "all" || (ui.termFilter === "fav" ? state.favorites.includes(t.id) : ui.termFilter === "mine" ? !t.builtin : ui.termFilter === "weak" ? state.missed.includes(t.id) : t.cat === ui.termFilter)) &&
-    (!q || norm([t.term, t.def, t.ex, t.mem, (t.alias || []).join(" ")].join(" ")).includes(q)));
+    (!q || norm([t.term, t.def, t.easy, t.ex, t.mem, (t.alias || []).join(" ")].join(" ")).includes(q)));
   const catOrder = Object.fromEntries(CATEGORIES.map((c, i) => [c.id, i]));
   if (ui.termSort === "cat") list.sort((a, b) => (catOrder[a.cat] ?? 99) - (catOrder[b.cat] ?? 99));
   if (ui.termSort === "weak") list.sort((a, b) => (P(b.id).wrong - P(b.id).correct * .5) - (P(a.id).wrong - P(a.id).correct * .5));
@@ -496,10 +517,12 @@ function detailView() {
   return `<div class="card">
     <div class="row wrap"><span class="pill">${esc(CAT[t.cat] || "その他")}</span>${(t.tags || []).map(g => `<span class="tag">${esc(TAGS[g] || g)}</span>`).join("")}${!t.builtin ? '<span class="tag">自作</span>' : ""}${t.edited ? '<span class="tag">編集済み</span>' : ""}</div>
     <div class="term">${esc(t.term)}</div>
-    <p style="font-size:15.5px">${esc(t.def)}</p>
+    ${easyHTML(t)}
+    ${(t.dias || []).length ? `<div class="section-label">図で見る</div>${t.dias.map(d => `<div class="diagram">${DIAGRAMS[d]}</div>`).join("")}` : ""}
+    <div class="section-label">${t.easy ? "もう少しくわしく" : "説明"}</div>
+    <p style="font-size:15px">${esc(t.def)}</p>
     ${t.ex ? `<div class="section-label">具体例</div><p>${esc(t.ex)}</p>` : ""}
-    ${t.mem ? `<div class="memo">💡 ${esc(t.mem)}</div>` : ""}
-    ${t.diagram && DIAGRAMS[t.diagram] ? `<div class="diagram">${DIAGRAMS[t.diagram]}</div>` : ""}
+    ${t.mem ? `<div class="memo">💡 覚え方：${esc(t.mem)}</div>` : ""}
   </div>
   <div class="row" style="gap:8px">
     <button class="btn grow" data-act="quiz-term" data-id="${esc(t.id)}">${icon("study", 18)} この用語をクイズ</button>
@@ -578,7 +601,7 @@ function sessionView() {
       <div class="flash" data-act="reveal">
         <span class="small muted">${esc(CAT[t.cat] || "")}</span>
         <div class="front">${esc(t.term)}</div>
-        ${s.revealed ? `<p style="text-align:left;margin-top:14px">${esc(t.def)}</p>${t.mem ? `<div class="memo" style="text-align:left">💡 ${esc(t.mem)}</div>` : ""}` : `<p class="muted small mt">意味を思い出してからタップ</p>`}
+        ${s.revealed ? `<div style="text-align:left;margin-top:6px">${t.easy ? easyHTML(t, true) : ""}<p class="${t.easy ? "small muted" : ""}" style="margin-top:10px">${esc(t.def)}</p>${t.mem ? `<div class="memo">💡 ${esc(t.mem)}</div>` : ""}</div>` : `<p class="muted small mt">意味を思い出してからタップ</p>`}
       </div>
       ${s.revealed ? `<p class="small muted" style="text-align:center">どのくらい思い出せた？</p><div class="rate">
         <button class="r-again" data-act="rate" data-g="0">もう一度<small>忘れた</small></button>
@@ -607,6 +630,7 @@ function sessionView() {
   if (a) {
     const correctText = q.kind === "input" ? `<br>正解：<strong>${esc(q.display)}</strong>` : "";
     fb = `<div class="feedback ${it.ok ? "ok" : "ng"}"><strong class="${it.ok ? "ok-t" : "ng-t"}">${it.ok ? "正解！" : "不正解"}</strong>${correctText}${q.why ? `<br>${esc(q.why)}` : ""}</div>
+      ${it.term && (it.term.easy || it.term.ill) ? easyHTML(it.term, true) : ""}
       ${!it.ok && q.kind === "input" && it.user ? `<button class="btn ghost sm" data-act="override">表記ゆれなので正解にする</button>` : ""}
       ${it.term ? `<button class="btn ghost sm" data-act="open" data-id="${esc(it.term.id)}" style="margin-left:4px">用語を見る</button>` : ""}
       <button class="btn full mt" data-act="next">${s.i + 1 >= s.items.length ? "結果を見る" : "次の問題へ →"}</button>`;
